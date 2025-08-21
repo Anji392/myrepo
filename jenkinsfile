@@ -1,0 +1,58 @@
+pipeline {
+  agent any
+
+  environment {
+    APP_HOST     = "192.168.56.11"
+    APP_USER     = "deploy"
+    APP_SSH_CRED = "app-ssh"
+    IMAGE_NAME   = "myorg/myapp"
+    IMAGE_TAG    = "${env.BUILD_NUMBER}"
+    TAR_NAME     = "myapp-${env.BUILD_NUMBER}.tar"
+  }
+
+  options {
+    timestamps()
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+  }
+
+  stages {
+    stage('Checkout') {
+      steps { checkout scm }
+    }
+
+    stage('Build image') {
+      steps { sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} ." }
+    }
+
+    stage('Test') {
+      steps { sh "docker run --rm ${IMAGE_NAME}:${IMAGE_TAG} pytest -q" }
+    }
+
+    stage('Package image') {
+      steps {
+        sh "docker save ${IMAGE_NAME}:${IMAGE_TAG} -o ${TAR_NAME}"
+        archiveArtifacts artifacts: "${TAR_NAME}", fingerprint: true
+      }
+    }
+
+    stage('Transfer & Deploy') {
+      steps {
+        sshagent (credentials: [env.APP_SSH_CRED]) {
+          sh """
+            scp -o StrictHostKeyChecking=no ${TAR_NAME} ${APP_USER}@${APP_HOST}:/tmp/${TAR_NAME}
+            ssh -o StrictHostKeyChecking=no ${APP_USER}@${APP_HOST} '
+              set -euxo pipefail
+              docker load -i /tmp/${TAR_NAME}
+              docker rm -f myapp || true
+              docker run -d --name myapp -p 5000:5000 ${IMAGE_NAME}:${IMAGE_TAG}
+            '
+          """
+        }
+      }
+    }
+  }
+
+  post {
+    always { sh "docker image prune -f || true" }
+  }
+}
