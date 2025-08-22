@@ -1,10 +1,48 @@
 pipeline {
   agent any
+  options { timestamps() }
+
+  environment {
+    IMAGE_NAME = "myorg/myapp"
+    IMAGE_TAG  = "${env.BUILD_NUMBER}"
+  }
+
   stages {
-    stage("ping") {
+    stage("Sanity") {
       steps {
-        sh 'echo OK'
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+pwd
+echo "PATH=$PATH"
+which docker
+docker version
+ls -la
+'''
       }
     }
+
+    stage("Checkout") { steps { checkout scm } }
+
+    stage("Build image") {
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
+'''
+      }
+    }
+
+    stage("Test") {
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+docker run --rm -e PYTHONPATH=/app ${IMAGE_NAME}:${IMAGE_TAG} pytest -q
+'''
+      }
+    }
+  }
+
+  post {
+    always { sh 'docker image prune -f || true' }
   }
 }
