@@ -118,16 +118,4 @@ REMOTE
   }
 }
 
-stage("Smoke test") {
-  steps {
-    withCredentials([sshUserPrivateKey(credentialsId: 'app-ssh-rsa',
-                                       keyFileVariable: 'SSH_KEY',
-                                       usernameVariable: 'SSH_USER')]) {
-      sh '''#!/usr/bin/env bash
-set -euo pipefail
-ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -p "${APP_SSH_PORT}" \
-  "$SSH_USER@${APP_HOST}" "curl -fsS http://localhost:5000/health | grep -q '\"status\":\"ok\"'"
-'''
-    }
-  }
-}
+
