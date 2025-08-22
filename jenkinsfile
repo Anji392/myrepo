@@ -1,12 +1,18 @@
 pipeline {
   agent any
-  options { timestamps() }
+  options {
+    timestamps()
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+  }
 
   environment {
-    APP_HOST     = "192.168.56.11"   // or host.docker.internal with an SSH port forward 2222
+    // If Docker Desktop -> VirtualBox networking is tricky:
+    // APP_HOST     = "host.docker.internal"
+    // APP_SSH_PORT = "2222"  // and forward guest 22 -> host 2222 in Vagrant
+    APP_HOST     = "192.168.56.11"
     APP_SSH_PORT = "22"
     APP_USER     = "deploy"
-    APP_SSH_CRED = "app-ssh"
+
     IMAGE_NAME   = "myorg/myapp"
     IMAGE_TAG    = "${env.BUILD_NUMBER}"
     TAR_NAME     = "myapp-${env.BUILD_NUMBER}.tar"
@@ -19,6 +25,10 @@ pipeline {
 set -euo pipefail
 which docker
 docker version
+echo "Env check:"
+echo "APP_HOST=$APP_HOST  APP_SSH_PORT=$APP_SSH_PORT  APP_USER=$APP_USER"
+echo "IMAGE_NAME=$IMAGE_NAME  IMAGE_TAG=$IMAGE_TAG  TAR_NAME=$TAR_NAME"
+pwd; ls -la
 '''
       }
     }
@@ -47,8 +57,10 @@ docker run --rm -e PYTHONPATH=/app ${IMAGE_NAME}:${IMAGE_TAG} pytest -q
       steps {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
-docker save ${IMAGE_NAME}:${IMAGE_TAG} -o ${TAR_NAME}
-ls -lh ${TAR_NAME}
+# Re-affirm defaults so set -u never trips
+TAR_NAME="${TAR_NAME:-myapp-${BUILD_NUMBER}.tar}"
+docker save ${IMAGE_NAME}:${IMAGE_TAG} -o "${TAR_NAME}"
+ls -lh "${TAR_NAME}"
 '''
         archiveArtifacts artifacts: "${TAR_NAME}", fingerprint: true
       }
@@ -56,10 +68,13 @@ ls -lh ${TAR_NAME}
 
     stage("Connectivity check") {
       steps {
-        sshagent (credentials: [env.APP_SSH_CRED]) {
+        withCredentials([sshUserPrivateKey(credentialsId: 'app-ssh-rsa',
+                                           keyFileVariable: 'SSH_KEY',
+                                           usernameVariable: 'SSH_USER')]) {
           sh '''#!/usr/bin/env bash
 set -euo pipefail
-ssh -o StrictHostKeyChecking=no -p ${APP_SSH_PORT} ${APP_USER}@${APP_HOST} "hostname && id && docker ps -a | head -5"
+ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -p "${APP_SSH_PORT}" \
+  "$SSH_USER@${APP_HOST}" "hostname && id && docker ps --format 'table {{.Names}}\\t{{.Image}}'"
 '''
         }
       }
@@ -67,16 +82,31 @@ ssh -o StrictHostKeyChecking=no -p ${APP_SSH_PORT} ${APP_USER}@${APP_HOST} "host
 
     stage("Transfer & Deploy") {
       steps {
-        sshagent (credentials: [env.APP_SSH_CRED]) {
+        withCredentials([sshUserPrivateKey(credentialsId: 'app-ssh-rsa',
+                                           keyFileVariable: 'SSH_KEY',
+                                           usernameVariable: 'SSH_USER')]) {
           sh '''#!/usr/bin/env bash
 set -euo pipefail
-scp -P ${APP_SSH_PORT} -o StrictHostKeyChecking=no ${TAR_NAME} ${APP_USER}@${APP_HOST}:/tmp/${TAR_NAME}
-ssh -o StrictHostKeyChecking=no -p ${APP_SSH_PORT} ${APP_USER}@${APP_HOST} '
-  set -euo pipefail
-  docker load -i /tmp/${TAR_NAME}
-  docker rm -f myapp || true
-  docker run -d --name myapp -p 5000:5000 ${IMAGE_NAME}:${IMAGE_TAG}
-'
+
+# Defensive defaults so set -u never errors even if env got lost
+TAR_NAME="${TAR_NAME:-myapp-${BUILD_NUMBER}.tar}"
+IMAGE_NAME="${IMAGE_NAME:-myorg/myapp}"
+IMAGE_TAG="${IMAGE_TAG:-${BUILD_NUMBER:-latest}}"
+
+# Upload the image tar
+scp -i "$SSH_KEY" -P "${APP_SSH_PORT}" -o StrictHostKeyChecking=no \
+  "${TAR_NAME}" "$SSH_USER@${APP_HOST}:/tmp/${TAR_NAME}"
+
+# Run the deployment remotely; pass values via env to avoid local/remote quoting issues
+ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -p "${APP_SSH_PORT}" \
+  "$SSH_USER@${APP_HOST}" \
+  env TAR_NAME="${TAR_NAME}" IMAGE_NAME="${IMAGE_NAME}" IMAGE_TAG="${IMAGE_TAG}" \
+  'bash -se' <<'REMOTE'
+set -euo pipefail
+docker load -i "/tmp/${TAR_NAME}"
+docker rm -f myapp || true
+docker run -d --name myapp -p 5000:5000 "${IMAGE_NAME}:${IMAGE_TAG}"
+REMOTE
 '''
         }
       }
