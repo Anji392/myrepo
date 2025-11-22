@@ -47,24 +47,17 @@ pipeline {
             }
         }
 
-        stage('Health Check') {
-            steps {
-                echo "Performing health check on Flask app..."
-                sh '''
-                    curl -f http://localhost:${APP_PORT}/ || (echo "Health check failed" && exit 1)
-                '''
-                echo "🚀 Flask app is successfully deployed on port ${APP_PORT}"
-            }
-        }
-    }
+      stage('Health Check') {
+    steps {
+        echo "Performing health check on Flask app..."
+        sh '''
+            echo "Containers running:"
+            docker ps
 
-    post {
-        success {
-            echo "✅ Deployment pipeline finished successfully."
-        }
-        failure {
-            echo "❌ Deployment failed. Check the logs!"
-        }
+            echo "Health check against flask-app container..."
+            curl -f http://flask-app:${APP_PORT}/ || (echo "Health check failed" && exit 1)
+        '''
+        echo "🚀 Flask app is successfully deployed on port ${APP_PORT}"
     }
 }
 
