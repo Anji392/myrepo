@@ -41,7 +41,7 @@ pipeline {
             steps {
                 echo "Running new container..."
                 sh '''
-                    docker run -d --name flask-app -p 7000:7000 flask-app:latest
+                    docker run -d --name flask-app --network jenkins-net -p 7000:7000 flask-app:latest
                     sleep 5
                 '''
             }
